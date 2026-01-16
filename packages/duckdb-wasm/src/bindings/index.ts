@@ -1,5 +1,6 @@
 export * from './bindings_interface';
 export * from './bindings_base';
+export * from './bindings_cloudflare';
 export * from './config';
 export * from './connection';
 export * from './duckdb_module';

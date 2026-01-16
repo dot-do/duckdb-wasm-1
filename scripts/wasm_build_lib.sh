@@ -41,6 +41,17 @@ case $FEATURES in
     SUFFIX="-coi"
     LINK_FLAGS="-pthread -sSHARED_MEMORY=1"
     ;;
+  "asyncify")
+    # Asyncify build for async I/O operations (e.g., Cloudflare Workers R2)
+    # Allows JS functions to return Promises that will be awaited
+    ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -DWITH_ASYNCIFY=1 -DDUCKDB_CUSTOM_PLATFORM=wasm_mvp_asyncify -DDUCKDB_EXPLICIT_PLATFORM=wasm_mvp_asyncify"
+    SUFFIX="-asyncify"
+    ;;
+  "asyncify-eh")
+    # Asyncify build with wasm exceptions for better performance
+    ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -DWITH_ASYNCIFY=1 -DWITH_WASM_EXCEPTIONS=1 -DDUCKDB_CUSTOM_PLATFORM=wasm_eh_asyncify -DDUCKDB_EXPLICIT_PLATFORM=wasm_eh_asyncify"
+    SUFFIX="-asyncify-eh"
+    ;;
    *) ;;
 esac
 echo "MODE=${MODE}"

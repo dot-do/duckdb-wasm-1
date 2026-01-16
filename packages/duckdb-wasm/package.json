@@ -114,6 +114,14 @@
         "./dist/duckdb-node-blocking.cjs": "./dist/duckdb-node-blocking.cjs",
         "./dist/duckdb-node-eh.worker.cjs": "./dist/duckdb-node-eh.worker.cjs",
         "./dist/duckdb-node-mvp.worker.cjs": "./dist/duckdb-node-mvp.worker.cjs",
+        "./dist/duckdb-workers": "./dist/duckdb-workers.mjs",
+        "./dist/duckdb-workers.mjs": "./dist/duckdb-workers.mjs",
+        "./dist/duckdb-workers.cjs": "./dist/duckdb-workers.cjs",
+        "./workers": {
+            "types": "./dist/duckdb-workers.d.ts",
+            "import": "./dist/duckdb-workers.mjs",
+            "require": "./dist/duckdb-workers.cjs"
+        },
         "./blocking": {
             "node": {
                 "types": "./dist/duckdb-node-blocking.d.ts",

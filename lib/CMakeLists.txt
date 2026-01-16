@@ -12,9 +12,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(ignoreMe "${DUCKDB_WASM_VERSION}")
 
 option(DUCKDB_WASM_LOADABLE_EXTENSIONS "Build with loadable extensions" OFF)
+option(WITH_ASYNCIFY "Build with Emscripten Asyncify support for async I/O" OFF)
 
 if(DEFINED ENV{DUCKDB_WASM_LOADABLE_EXTENSIONS})
   set(DUCKDB_WASM_LOADABLE_EXTENSIONS ON)
+endif()
+
+if(DEFINED ENV{WITH_ASYNCIFY})
+  set(WITH_ASYNCIFY ON)
 endif()
 
 
@@ -146,6 +151,55 @@ if(EMSCRIPTEN)
     set(THREAD_LIBS)
   endif()
   set(DUCKDB_CXX_FLAGS "${DUCKDB_CXX_FLAGS} -DDUCKDB_CUSTOM_PLATFORM=${DUCKDB_PLATFORM}")
+
+  # ---------------------------------------------------------------------------
+  # Asyncify support for async I/O operations
+  # This allows JavaScript functions to return Promises that will be awaited
+  # ---------------------------------------------------------------------------
+  if(WITH_ASYNCIFY)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DWEBDB_ASYNCIFY=1")
+    set(DUCKDB_PLATFORM "${DUCKDB_PLATFORM}_asyncify")
+
+    # List of JS functions that may return Promises and need to be awaited
+    # These are defined in js-stubs.js and call into DUCKDB_RUNTIME
+    set(ASYNCIFY_IMPORTS_LIST
+      "duckdb_web_fs_file_open"
+      "duckdb_web_fs_file_sync"
+      "duckdb_web_fs_file_drop_file"
+      "duckdb_web_fs_file_close"
+      "duckdb_web_fs_file_truncate"
+      "duckdb_web_fs_file_read"
+      "duckdb_web_fs_file_write"
+      "duckdb_web_fs_file_get_last_modified_time"
+      "duckdb_web_fs_directory_exists"
+      "duckdb_web_fs_directory_create"
+      "duckdb_web_fs_directory_remove"
+      "duckdb_web_fs_directory_list_files"
+      "duckdb_web_fs_glob"
+      "duckdb_web_fs_file_move"
+      "duckdb_web_fs_file_exists"
+      "duckdb_web_fs_file_remove"
+      "duckdb_web_test_platform_feature"
+      "duckdb_web_fs_get_default_data_protocol"
+      "duckdb_web_udf_scalar_call"
+    )
+    # Convert list to JSON array format for Emscripten
+    string(REPLACE ";" "\",\"" ASYNCIFY_IMPORTS_JSON "${ASYNCIFY_IMPORTS_LIST}")
+    set(ASYNCIFY_IMPORTS_JSON "[\"${ASYNCIFY_IMPORTS_JSON}\"]")
+
+    # Configure Asyncify stack size (64KB default, can be increased if needed)
+    if(NOT DEFINED ASYNCIFY_STACK_SIZE)
+      set(ASYNCIFY_STACK_SIZE 65536)
+    endif()
+
+    set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} \
+      -sASYNCIFY=1 \
+      -sASYNCIFY_STACK_SIZE=${ASYNCIFY_STACK_SIZE} \
+      -sASYNCIFY_IMPORTS=${ASYNCIFY_IMPORTS_JSON}")
+
+    message(STATUS "Asyncify enabled with stack size: ${ASYNCIFY_STACK_SIZE}")
+    message(STATUS "Asyncify imports: ${ASYNCIFY_IMPORTS_JSON}")
+  endif()
 else()
   set(CMAKE_CXX_FLAGS
       "${CMAKE_CXX_FLAGS} -DWEBDB_FAST_EXCEPTIONS=1 -DWEBDB_THREADS=1")
@@ -282,6 +336,18 @@ endif()
      # --pre-js "/Users/carlo/databricks/duckdb_delta/file_system_packager.js" \
 #
 if(EMSCRIPTEN)
+  # Base exported runtime methods
+  set(EXPORTED_RUNTIME_METHODS "ccall" "stackSave" "stackAlloc" "stackRestore" "createDyncallWrapper" "getTempRet0" "setTempRet0")
+
+  # Add asyncify-specific runtime methods if asyncify is enabled
+  if(WITH_ASYNCIFY)
+    list(APPEND EXPORTED_RUNTIME_METHODS "Asyncify")
+  endif()
+
+  # Convert list to JSON array format
+  string(REPLACE ";" "\",\"" EXPORTED_RUNTIME_METHODS_JSON "${EXPORTED_RUNTIME_METHODS}")
+  set(EXPORTED_RUNTIME_METHODS_JSON "[\"${EXPORTED_RUNTIME_METHODS_JSON}\"]")
+
   add_executable(duckdb_wasm ${CMAKE_SOURCE_DIR}/src/wasm_main.cc)
   target_link_libraries(duckdb_wasm duckdb_web ${THREAD_LIBS})
   message(STATUS "WASM_LINK_FLAGS=${WASM_LINK_FLAGS}")
@@ -296,7 +362,7 @@ if(EMSCRIPTEN)
       -s MAXIMUM_MEMORY=4GB \
       -s MODULARIZE=1 \
       -s EXPORT_NAME='DuckDB' \
-      -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"stackSave\", \"stackAlloc\", \"stackRestore\", \"createDyncallWrapper\", \"getTempRet0\", \"setTempRet0\"]' \
+      -s EXPORTED_RUNTIME_METHODS='${EXPORTED_RUNTIME_METHODS_JSON}' \
       --js-library=${CMAKE_SOURCE_DIR}/js-stubs.js")
 
 endif()
