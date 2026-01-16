@@ -15,7 +15,11 @@ echo "${DUCKDB_LOCATION}"
 CPP_SOURCE_DIR="${PROJECT_ROOT}/lib"
 DUCKDB_LIB_DIR="${PROJECT_ROOT}/packages/duckdb-wasm/src/bindings"
 
-CORES=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || sysctl -n hw.ncpu)
+# Allow overriding core count via BUILD_CORES env var for memory-constrained builds
+# wasm-opt with ASYNCIFY needs significant memory during linking
+DEFAULT_CORES=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || sysctl -n hw.ncpu)
+CORES=${BUILD_CORES:-$DEFAULT_CORES}
+echo "Using ${CORES} cores for build (set BUILD_CORES to override)"
 
 ADDITIONAL_FLAGS=
 SUFFIX=
@@ -51,6 +55,12 @@ case $FEATURES in
     # Asyncify build with wasm exceptions for better performance
     ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -DWITH_ASYNCIFY=1 -DWITH_WASM_EXCEPTIONS=1 -DDUCKDB_CUSTOM_PLATFORM=wasm_eh_asyncify -DDUCKDB_EXPLICIT_PLATFORM=wasm_eh_asyncify"
     SUFFIX="-asyncify-eh"
+    ;;
+  "relsize-asyncify")
+    # Size-optimized asyncify build combining WASM_MIN_SIZE with ASYNCIFY
+    # Uses -Oz and -flto for maximum size reduction while supporting async I/O
+    ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -DCMAKE_BUILD_TYPE=Release -DWASM_MIN_SIZE=1 -DWITH_ASYNCIFY=1 -DDUCKDB_CUSTOM_PLATFORM=wasm_mvp_asyncify -DDUCKDB_EXPLICIT_PLATFORM=wasm_mvp_asyncify"
+    SUFFIX="-relsize-asyncify"
     ;;
    *) ;;
 esac

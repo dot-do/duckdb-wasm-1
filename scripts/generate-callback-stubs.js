@@ -1,0 +1,299 @@
+#!/usr/bin/env node
+/**
+ * Generate pre-compiled WASM callback stubs for Emscripten addFunction replacement
+ *
+ * This script generates the exact same WASM bytecode that Emscripten's
+ * convertJsFunctionToWasm() creates, but at build time instead of runtime.
+ *
+ * Usage:
+ *   node scripts/generate-callback-stubs.js
+ *
+ * Output:
+ *   - Prints TypeScript/JavaScript code with pre-computed byte arrays
+ *   - Optionally writes .wasm files to a directory
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+// WASM type codes (from Emscripten)
+const WASM_TYPE_CODES = {
+  'i': 0x7f,  // i32
+  'p': 0x7f,  // i32 (pointer - same as i32 in 32-bit WASM)
+  'j': 0x7e,  // i64
+  'f': 0x7d,  // f32
+  'd': 0x7c,  // f64
+  'e': 0x6f,  // externref
+  'v': null   // void (only for return type)
+};
+
+// Common signatures used by PGlite and DuckDB-WASM
+const SIGNATURES = [
+  'v',      // void -> void
+  'vi',     // void -> i32
+  'vii',    // void -> i32, i32
+  'viii',   // void -> i32, i32, i32
+  'viiii',  // void -> i32, i32, i32, i32
+  'i',      // i32 -> void
+  'ii',     // i32 -> i32
+  'iii',    // i32 -> i32, i32 (PGlite read/write callbacks)
+  'iiii',   // i32 -> i32, i32, i32
+  'iiiii',  // i32 -> i32, i32, i32, i32
+  'di',     // f64 -> i32
+  'dii',    // f64 -> i32, i32
+  'id',     // i32 -> f64
+  'iid',    // i32 -> i32, f64
+  'fi',     // f32 -> i32
+  'if',     // i32 -> f32
+];
+
+/**
+ * LEB128 encode a length and prepend to array
+ * Supports lengths up to 16384 (2^14)
+ *
+ * This matches Emscripten's uleb128EncodeWithLen
+ */
+function uleb128EncodeWithLen(arr) {
+  const n = arr.length;
+  if (n >= 16384) {
+    throw new Error(`Array too large for LEB128: ${n}`);
+  }
+  if (n < 128) {
+    return [n, ...arr];
+  }
+  return [(n % 128) | 128, n >> 7, ...arr];
+}
+
+/**
+ * Generate type pack for WASM function signature
+ *
+ * This matches Emscripten's generateTypePack
+ */
+function generateTypePack(types) {
+  const codes = [];
+  for (const t of types) {
+    const code = WASM_TYPE_CODES[t];
+    if (code !== null && code !== undefined) {
+      codes.push(code);
+    }
+  }
+  return uleb128EncodeWithLen(codes);
+}
+
+/**
+ * Generate WASM module bytes for a given signature
+ *
+ * This produces the exact same output as Emscripten's convertJsFunctionToWasm
+ */
+function generateStubBytes(sig) {
+  const paramTypes = sig.slice(1);  // All characters after first
+  const returnType = sig[0] === 'v' ? '' : sig[0];  // First char, empty if void
+
+  // Build the type section content
+  const typeContent = [
+    0x01,  // count: 1 type
+    0x60,  // form: func
+    ...generateTypePack(paramTypes),
+    ...generateTypePack(returnType)
+  ];
+
+  // Build the complete module
+  const bytes = [
+    // Magic number and version
+    0x00, 0x61, 0x73, 0x6d,  // magic: "\0asm"
+    0x01, 0x00, 0x00, 0x00,  // version: 1
+
+    // Type section (section code 0x01)
+    0x01,
+    ...uleb128EncodeWithLen(typeContent),
+
+    // Import section (section code 0x02)
+    // Imports function 'f' from module 'e'
+    0x02, 0x07,  // section code and length
+    0x01,        // 1 import
+    0x01, 0x65,  // module name: "e" (length 1)
+    0x01, 0x66,  // field name: "f" (length 1)
+    0x00, 0x00,  // import kind: function, type index 0
+
+    // Export section (section code 0x07)
+    // Exports function 'f' at index 0
+    0x07, 0x05,  // section code and length
+    0x01,        // 1 export
+    0x01, 0x66,  // export name: "f" (length 1)
+    0x00, 0x00,  // export kind: function, func index 0
+  ];
+
+  return new Uint8Array(bytes);
+}
+
+/**
+ * Verify a stub by compiling and instantiating it
+ */
+function verifyStub(sig, bytes) {
+  try {
+    const module = new WebAssembly.Module(bytes);
+
+    // Create a dummy function matching the signature
+    const params = sig.slice(1);
+    const returnType = sig[0];
+
+    const dummyFunc = (...args) => {
+      if (returnType === 'v') return;
+      if (returnType === 'i' || returnType === 'p') return 42;
+      if (returnType === 'j') return 42n;
+      if (returnType === 'f' || returnType === 'd') return 3.14;
+      return 0;
+    };
+
+    const instance = new WebAssembly.Instance(module, { e: { f: dummyFunc } });
+    const exportedFunc = instance.exports.f;
+
+    // Try to call it
+    const testArgs = Array(params.length).fill(0);
+    exportedFunc(...testArgs);
+
+    return true;
+  } catch (e) {
+    console.error(`Failed to verify stub for '${sig}':`, e.message);
+    return false;
+  }
+}
+
+/**
+ * Generate TypeScript code for all stubs
+ */
+function generateTypeScriptCode(stubs) {
+  const lines = [
+    '/**',
+    ' * Pre-generated WASM callback stubs for Emscripten addFunction replacement',
+    ' * ',
+    ' * These byte arrays create minimal WASM modules that wrap JS functions,',
+    ' * allowing them to be added to the WASM function table without runtime',
+    ' * WebAssembly compilation (which is blocked in Cloudflare Workers).',
+    ' * ',
+    ' * Generated by: scripts/generate-callback-stubs.js',
+    ' */',
+    '',
+    'export const CALLBACK_STUB_BYTES: Record<string, Uint8Array> = {',
+  ];
+
+  for (const [sig, bytes] of Object.entries(stubs)) {
+    const bytesStr = Array.from(bytes).join(', ');
+    lines.push(`  '${sig}': new Uint8Array([${bytesStr}]),`);
+  }
+
+  lines.push('};');
+  lines.push('');
+  lines.push('// Pre-compiled modules (created at module load time)');
+  lines.push('let _compiledModules: Record<string, WebAssembly.Module> | null = null;');
+  lines.push('');
+  lines.push('function getCompiledModules(): Record<string, WebAssembly.Module> {');
+  lines.push('  if (!_compiledModules) {');
+  lines.push('    _compiledModules = {};');
+  lines.push('    for (const [sig, bytes] of Object.entries(CALLBACK_STUB_BYTES)) {');
+  lines.push('      _compiledModules[sig] = new WebAssembly.Module(bytes);');
+  lines.push('    }');
+  lines.push('  }');
+  lines.push('  return _compiledModules;');
+  lines.push('}');
+  lines.push('');
+  lines.push('/**');
+  lines.push(' * Convert a JavaScript function to a WASM-compatible function');
+  lines.push(' * using pre-compiled stub modules instead of runtime compilation.');
+  lines.push(' * ');
+  lines.push(' * This is a drop-in replacement for Emscripten\'s convertJsFunctionToWasm.');
+  lines.push(' */');
+  lines.push('export function convertJsFunctionToWasm(');
+  lines.push('  func: Function,');
+  lines.push('  sig: string');
+  lines.push('): Function {');
+  lines.push('  // Try WebAssembly.Function first (if supported)');
+  lines.push('  if (typeof WebAssembly.Function === \'function\') {');
+  lines.push('    const sigToWasmTypes = (s: string) => {');
+  lines.push('      const typeNames: Record<string, string> = {');
+  lines.push('        \'i\': \'i32\', \'j\': \'i64\', \'f\': \'f32\',');
+  lines.push('        \'d\': \'f64\', \'e\': \'externref\', \'p\': \'i32\'');
+  lines.push('      };');
+  lines.push('      return {');
+  lines.push('        parameters: Array.from(s.slice(1), c => typeNames[c]),');
+  lines.push('        results: s[0] === \'v\' ? [] : [typeNames[s[0]]]');
+  lines.push('      };');
+  lines.push('    };');
+  lines.push('    return new (WebAssembly as any).Function(sigToWasmTypes(sig), func);');
+  lines.push('  }');
+  lines.push('');
+  lines.push('  // Fall back to pre-compiled stubs');
+  lines.push('  const modules = getCompiledModules();');
+  lines.push('  const module = modules[sig];');
+  lines.push('  if (!module) {');
+  lines.push('    throw new Error(`No pre-compiled stub for signature: ${sig}`);');
+  lines.push('  }');
+  lines.push('');
+  lines.push('  const instance = new WebAssembly.Instance(module, { e: { f: func } });');
+  lines.push('  return instance.exports.f as Function;');
+  lines.push('}');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+/**
+ * Main entry point
+ */
+function main() {
+  console.log('Generating WASM callback stubs...\n');
+
+  const stubs = {};
+  let allValid = true;
+
+  for (const sig of SIGNATURES) {
+    const bytes = generateStubBytes(sig);
+    const valid = verifyStub(sig, bytes);
+
+    stubs[sig] = bytes;
+
+    const status = valid ? '\x1b[32mOK\x1b[0m' : '\x1b[31mFAIL\x1b[0m';
+    console.log(`  ${sig.padEnd(8)} -> ${bytes.length} bytes [${status}]`);
+
+    if (!valid) allValid = false;
+  }
+
+  console.log('');
+
+  if (!allValid) {
+    console.error('Some stubs failed verification!');
+    process.exit(1);
+  }
+
+  // Generate TypeScript code
+  const tsCode = generateTypeScriptCode(stubs);
+
+  // Output file path
+  const outputDir = path.join(__dirname, '..', 'lib', 'callback-stubs');
+  const outputFile = path.join(outputDir, 'index.ts');
+
+  // Create directory if needed
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  // Write the file
+  fs.writeFileSync(outputFile, tsCode);
+  console.log(`Generated: ${outputFile}`);
+
+  // Also generate individual .wasm files
+  const wasmDir = path.join(outputDir, 'wasm');
+  if (!fs.existsSync(wasmDir)) {
+    fs.mkdirSync(wasmDir, { recursive: true });
+  }
+
+  for (const [sig, bytes] of Object.entries(stubs)) {
+    const wasmFile = path.join(wasmDir, `${sig}.wasm`);
+    fs.writeFileSync(wasmFile, bytes);
+  }
+  console.log(`Generated ${Object.keys(stubs).length} .wasm files in: ${wasmDir}`);
+
+  console.log('\nDone!');
+}
+
+main();

@@ -1,0 +1,58 @@
+# Dockerfile for building DuckDB-WASM with ASYNCIFY support
+# This is a simplified build environment focused solely on WASM compilation
+# Using linux/amd64 platform for emscripten compatibility
+
+FROM --platform=linux/amd64 ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install base dependencies
+RUN apt-get update -qq && apt-get install -y \
+    build-essential \
+    git \
+    ccache \
+    cmake \
+    ninja-build \
+    curl \
+    python3 \
+    bison \
+    flex \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Emscripten SDK
+ARG EMSDK_VERSION="3.1.56"
+RUN mkdir -p /opt/emsdk \
+    && cd /opt/emsdk \
+    && curl -SL https://github.com/emscripten-core/emsdk/archive/${EMSDK_VERSION}.tar.gz | tar -xz --strip-components=1 \
+    && ./emsdk install ${EMSDK_VERSION} \
+    && ./emsdk activate ${EMSDK_VERSION} \
+    && /bin/bash ./emsdk_env.sh \
+    && rm -rf ./emscripten/tag-*/tests \
+    && rm -rf ./emscripten/tag-*/site \
+    && rm -rf ./emscripten/tag-*/docs \
+    && rm -rf ./zips \
+    && find . -name "*.o" -exec rm {} \; \
+    && find . -name "*.a" -exec rm {} \; \
+    && find . -name "*.tmp" -exec rm {} \;
+
+# Install Node.js
+ARG NODE_VERSION="20"
+RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g yarn js-beautify \
+    && rm -rf /var/lib/apt/lists/*
+
+SHELL ["/bin/bash", "-c"]
+
+# Setup environment
+RUN echo 'source /opt/emsdk/emsdk_env.sh' >> /etc/bash.bashrc
+
+WORKDIR /wd
+
+# Entry point script
+RUN printf '#!/bin/bash\nsource /opt/emsdk/emsdk_env.sh\nexec "$@"\n' > /entrypoint.sh \
+    && chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]

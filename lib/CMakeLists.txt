@@ -94,8 +94,8 @@ if(EMSCRIPTEN)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DNDEBUG")
     # ... with min size
     if(WASM_MIN_SIZE)
-      set(CMAKE_CXX_FLAGS_RELEASE "-Oz")
-      set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -Oz")
+      set(CMAKE_CXX_FLAGS_RELEASE "-Oz -flto")
+      set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -Oz -flto")
     else()
       # ... with max performance
       set(CMAKE_CXX_FLAGS_RELEASE "-O3")
@@ -192,10 +192,13 @@ if(EMSCRIPTEN)
       set(ASYNCIFY_STACK_SIZE 65536)
     endif()
 
+    # ASYNCIFY_IGNORE_INDIRECT reduces memory usage during wasm-opt transformation
+    # by not instrumenting indirect calls. We specify the necessary imports explicitly.
     set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} \
       -sASYNCIFY=1 \
       -sASYNCIFY_STACK_SIZE=${ASYNCIFY_STACK_SIZE} \
-      -sASYNCIFY_IMPORTS=${ASYNCIFY_IMPORTS_JSON}")
+      -sASYNCIFY_IMPORTS=${ASYNCIFY_IMPORTS_JSON} \
+      -sASYNCIFY_IGNORE_INDIRECT")
 
     message(STATUS "Asyncify enabled with stack size: ${ASYNCIFY_STACK_SIZE}")
     message(STATUS "Asyncify imports: ${ASYNCIFY_IMPORTS_JSON}")

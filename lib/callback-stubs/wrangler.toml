@@ -1,0 +1,11 @@
+# Wrangler configuration for testing callback stubs
+name = "callback-stubs-test"
+main = "test-worker-imports.ts"
+compatibility_date = "2024-01-01"
+
+# Enable TypeScript and WASM imports
+[build]
+command = ""
+
+# Wasm modules are automatically handled by Wrangler
+# When you import a .wasm file, Wrangler bundles it as a static asset
